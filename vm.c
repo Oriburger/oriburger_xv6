@@ -10,6 +10,10 @@
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 
+extern uint inc_refcount(uint pa);
+extern uint dec_refcount(uint pa);
+extern uint get_refcount(uint pa);
+
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
 void
@@ -315,30 +319,32 @@ clearpteu(pde_t *pgdir, char *uva)
 pde_t*
 copyuvm(pde_t *pgdir, uint sz)
 {
+  cprintf("> copyuvm !!\n");
   pde_t *d;
   pte_t *pte;
   uint pa, i, flags;
-  char *mem;
 
+  // setupkvm : 페이지 디렉터리 생성
+  // mappages : 자식 프로세스의 페이지 테이블에 새로운 물리 페이지 매핑
+  //walkpgdir : 부모 프로세스 테이블에서 i에 해당하는 PTE 탐색
   if((d = setupkvm()) == 0)
     return 0;
   
   for(i = 0; i < sz; i += PGSIZE){
-  
     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
       panic("copyuvm: pte should exist");
     if(!(*pte & PTE_P))
       panic("copyuvm: page not present");
+
+    *pte &= ~PTE_W; //Write 권한 제거@@@@@@@@@@
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+
+    if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0) 
       goto bad;
-    memmove(mem, (char*)P2V(pa), PGSIZE);
-    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
-      kfree(mem);
-      goto bad;
-    }
+    inc_refcount(pa);
   }
+  lcr3(V2P(pgdir));
   return d;
 
 bad:
@@ -387,10 +393,30 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
   return 0;
 }
 
-//PAGEBREAK!
-// Blank page.
-//PAGEBREAK!
-// Blank page.
-//PAGEBREAK!
-// Blank page.
+void 
+pagefault()
+{
+  cprintf("> page fault!!\n");
+  uint va, pa, refcnt;
+  pte_t* pte;
+  
+  va = rcr2(); //pagefault가 발생한 가상 주소를 불러옴
+  if(va == 0) return;
+  if(myproc() == 0) return;
 
+  if((pte = walkpgdir(myproc()->pgdir, (void*)va, 0)) == 0)
+    panic("page fault : pte should exist");
+
+  pa = PTE_ADDR(*pte); //물리 주소를 찾는다.
+  refcnt = get_refcount(pa);
+
+  if(refcnt == 1) *pte |= PTE_W;
+  else if(refcnt > 1) {
+    char *mem;
+    if((mem = kalloc()) == 0) return;
+    memmove(mem, (char*)P2V(pa), PGSIZE);
+    *pte = V2P(mem) | PTE_P | PTE_W | PTE_U;
+    dec_refcount(pa);
+  }
+  lcr3(V2P(myproc()->pgdir));
+}

@@ -26,6 +26,30 @@ struct {
 uint num_free_pages;
 uint pgrefcount[PHYSTOP >> PGSHIFT];
 
+int
+get_numfreepages(void)
+{
+  return num_free_pages;
+}
+
+uint 
+get_refcount(uint pa)
+{
+  return pgrefcount[pa >> PGSHIFT];
+}
+
+void
+dec_refcount(uint pa)
+{
+  --pgrefcount[pa >> PGSHIFT];
+}
+
+void
+inc_refcount(uint pa)
+{
+  ++pgrefcount[pa >> PGSHIFT];
+}
+
 // Initialization happens in two phases.
 // 1. main() calls kinit1() while still using entrypgdir to place just
 // the pages mapped by entrypgdir on free list.
@@ -55,7 +79,7 @@ freerange(void *vstart, void *vend)
   for(; p + PGSIZE <= (char*)vend; p += PGSIZE)
   {
     kfree(p);
-    pgrefcount[V2P(p)] = 0; //pgrefcount 0으로 초기화@@@@@@@@@@@@ 
+    pgrefcount[V2P(p) >> PGSHIFT] = 0; //pgrefcount 0으로 초기화@@@@@@@@@@@@ 
   }
 }
 //PAGEBREAK: 21
@@ -66,7 +90,8 @@ freerange(void *vstart, void *vend)
 void
 kfree(char *v)
 {
-  struct run *r;
+  struct run *r = 0;
+  uint refcnt;
 
   if((uint)v % PGSIZE || v < end || V2P(v) >= PHYSTOP)
     panic("kfree");
@@ -74,10 +99,11 @@ kfree(char *v)
   if(kmem.use_lock)
       acquire(&kmem.lock);
 
-  if(get_refcount(V2P(v)) > 0)   //0보다 크면, REFCOUNT만 줄임 @@@@@@@@@@@@@
+  refcnt = get_refcount(V2P(v));
+  if(refcnt > 0)   //0보다 크면, REFCOUNT만 줄임 @@@@@@@@@@@@@
     dec_refcount(V2P(v));
 
-  if(get_refcount(V2P(v)) == 0) {  //0이면, free해도됨 @@@@@@@@@@@@@
+  if(refcnt == 0) {  //0이면, free해도됨 @@@@@@@@@@@@@
     // Fill with junk to catch dangling refs.
     memset(v, 1, PGSIZE);
     num_free_pages++;  //FREE PAGES 개수 증가 @@@@@@@@@@@@
@@ -103,32 +129,8 @@ kalloc(void)
   if(r)
     kmem.freelist = r->next;
   num_free_pages--;  //FREE PAGES 개수 감소 @@@@@@@@@@@@
+  pgrefcount[V2P(r) >> PGSHIFT] = 1; //1으로 지정 @@@@@@@@@@@@@
   if(kmem.use_lock)
     release(&kmem.lock);
-  pgrefcount[V2P(r) >> PGSHIFT] = 1; //0으로 지정 @@@@@@@@@@@@@
   return (char*)r;
-}
-
-int
-get_numfreepages(void)
-{
-  return num_free_pages;
-}
-
-uint 
-get_refcount(uint pa)
-{
-  return pgrefcount[pa >> PGSHIFT];
-}
-
-uint
-inc_refcount(uint pa)
-{
-  return ++pgrefcount[pa >> PGSHIFT];
-}
-
-uint
-dec_refcount(uint pa)
-{
-  return --pgrefcount[pa >> PGSHIFT];
 }
